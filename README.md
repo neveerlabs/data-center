@@ -36,17 +36,17 @@ python akun.py
 - Saat pertama kali digunakan, akan diminta membuat password baru. password ini digunakan untuk mengenkripsi dan mendekripsi data
 - setelah login, akan masuk ke menu utama. navigasi menggunakan tombol panah (kiri / kanan) dan enter untuk 
 
-## File yg dibuat otomatis:
+## File yang Dibuat Otomatis
 
-Semua file disimpan di direktori `~/.data-center/`
-```tabel
-File Deskripsi
-.password Hash password (SHA-256 + salt)
-.salt Salt acak untuk derivasi key
-.data.enc File data terenkripsi (AES-GCM)
-```
+Semua file disimpan di direktori `~/.data-center/`:
 
-`.data.enc` berisi seluruh data yang disimpan. isinya sudah terenkripsi, sehingga tidak dapat dibaca secara langsung
+| File          | Deskripsi                                     |
+|---------------|-----------------------------------------------|
+| `.password`   | Hash password (SHA-256 + salt)                |
+| `.salt`       | Salt acak untuk derivasi key                  |
+| `.data.enc`   | File data terenkripsi (AES-GCM)               |
+
+`data.enc` berisi seluruh data yang disimpan. Isinya sudah terenkripsi, sehingga tidak bisa dibaca secara langsung
 
 ## Keamanan
 
