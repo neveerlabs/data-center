@@ -1,3 +1,5 @@
+![Screenshot](https://raw.githubusercontent.com/neveerlabs/data-center/main/screenshot.jpg)
+
 # Data Center
 
 Aplikasi penyimpan data penting (akun dan API) secara lokal dan terenkripsi
