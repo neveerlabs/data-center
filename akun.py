@@ -15,14 +15,14 @@ import curses
 import getpass
 
 HOME = os.path.expanduser("~")
-TERMUX_DIR = os.path.join(HOME, ".termux")
-PASS_FILE = os.path.join(TERMUX_DIR, ".password")
-SALT_FILE = os.path.join(TERMUX_DIR, ".salt")
-DATA_FILE = os.path.join(TERMUX_DIR, ".data.enc")
+DATA_CENTER_DIR = os.path.join(HOME, ".data-center")
+PASS_FILE = os.path.join(DATA_CENTER_DIR, ".password")
+SALT_FILE = os.path.join(DATA_CENTER_DIR, ".salt")
+DATA_FILE = os.path.join(DATA_CENTER_DIR, ".data.enc")
 
 def ensure_dir():
-    if not os.path.exists(TERMUX_DIR):
-        os.makedirs(TERMUX_DIR)
+    if not os.path.exists(DATA_CENTER_DIR):
+        os.makedirs(DATA_CENTER_DIR)
 
 def get_salt():
     if not os.path.exists(SALT_FILE):
@@ -163,15 +163,41 @@ def show_message(stdscr, msg, y=None, x=None):
     stdscr.refresh()
     stdscr.getch()
 
-def edit_form(stdscr, data=None, is_edit=False):
-    stdscr.keypad(True)
+def select_category(stdscr):
+    categories = ["Account", "API"]
+    current = 0
+    while True:
+        stdscr.clear()
+        h, w = stdscr.getmaxyx()
+        y = h//2 - 1
+        x = w//2 - 10
+        stdscr.addstr(y-1, x, "Select category:")
+        for i, cat in enumerate(categories):
+            if i == current:
+                stdscr.attron(curses.A_REVERSE)
+                stdscr.addstr(y+i, x, f"  {cat}  ")
+                stdscr.attroff(curses.A_REVERSE)
+            else:
+                stdscr.addstr(y+i, x, f"  {cat}  ")
+        stdscr.refresh()
+        key = stdscr.getch()
+        if key == curses.KEY_UP:
+            current = (current - 1) % len(categories)
+        elif key == curses.KEY_DOWN:
+            current = (current + 1) % len(categories)
+        elif key == 10:
+            return categories[current].lower()
+        elif key == 27:
+            return None
+
+def edit_form_account(stdscr, data=None, is_edit=False):
     fields = ["title", "name", "note", "username", "password"]
     if data is None:
         data = {f: "" for f in fields}
     y0 = 4
     x0 = 4
     stdscr.clear()
-    stdscr.addstr(2, x0, "--- ENTER DATA ---" if not is_edit else "--- EDIT DATA ---")
+    stdscr.addstr(2, x0, "--- ENTER ACCOUNT DATA ---" if not is_edit else "--- EDIT ACCOUNT DATA ---")
     new_data = {}
     for idx, f in enumerate(fields):
         default = data.get(f, "")
@@ -180,7 +206,76 @@ def edit_form(stdscr, data=None, is_edit=False):
         if val is None:
             return None
         new_data[f] = val
+    new_data["type"] = "account"
     return new_data
+
+def edit_form_api(stdscr, data=None, is_edit=False):
+    fields = ["title", "category", "name", "note", "data_api"]
+    if data is None:
+        data = {f: "" for f in fields}
+    y0 = 4
+    x0 = 4
+    stdscr.clear()
+    stdscr.addstr(2, x0, "--- ENTER API DATA ---" if not is_edit else "--- EDIT API DATA ---")
+    new_data = {}
+    if not is_edit:
+        cat = None
+        while cat is None:
+            stdscr.clear()
+            stdscr.addstr(2, x0, "--- ENTER API DATA ---")
+            stdscr.addstr(4, x0, "Category: ")
+            choices = ["ai", "platform"]
+            current = 0
+            while True:
+                stdscr.move(4, x0 + 10)
+                stdscr.clrtoeol()
+                for i, ch in enumerate(choices):
+                    if i == current:
+                        stdscr.attron(curses.A_REVERSE)
+                        stdscr.addstr(4, x0 + 10 + i*10, f" {ch} ")
+                        stdscr.attroff(curses.A_REVERSE)
+                    else:
+                        stdscr.addstr(4, x0 + 10 + i*10, f" {ch} ")
+                stdscr.refresh()
+                key = stdscr.getch()
+                if key == curses.KEY_LEFT:
+                    current = (current - 1) % len(choices)
+                elif key == curses.KEY_RIGHT:
+                    current = (current + 1) % len(choices)
+                elif key == 10:
+                    cat = choices[current]
+                    break
+                elif key == 27:
+                    return None
+        new_data["category"] = cat
+    else:
+        new_data["category"] = data.get("category", "ai")
+    for f in ["title", "name", "note", "data_api"]:
+        default = data.get(f, "")
+        prompt = f.capitalize()
+        if f == "data_api":
+            prompt = "Data API"
+        val = input_field(stdscr, prompt, y0 + len(new_data), x0, default)
+        if val is None:
+            return None
+        new_data[f] = val
+    new_data["type"] = "api"
+    return new_data
+
+def edit_form(stdscr, data=None, is_edit=False):
+    if data is None:
+        cat = select_category(stdscr)
+        if cat is None:
+            return None
+        if cat == "account":
+            return edit_form_account(stdscr, None, False)
+        else:
+            return edit_form_api(stdscr, None, False)
+    else:
+        if data.get("type") == "account":
+            return edit_form_account(stdscr, data, True)
+        else:
+            return edit_form_api(stdscr, data, True)
 
 def select_item(stdscr, items, prompt="Select:"):
     if not items:
@@ -197,12 +292,13 @@ def select_item(stdscr, items, prompt="Select:"):
             y = menu_y + i
             if y >= h - 2:
                 break
+            display = f"{i+1}. {item}"
             if i == current:
                 stdscr.attron(curses.A_REVERSE)
-                stdscr.addnstr(y, menu_x, f"{i+1}. {item}", w - menu_x - 1)
+                stdscr.addnstr(y, menu_x, display, w - menu_x - 1)
                 stdscr.attroff(curses.A_REVERSE)
             else:
-                stdscr.addnstr(y, menu_x, f"{i+1}. {item}", w - menu_x - 1)
+                stdscr.addnstr(y, menu_x, display, w - menu_x - 1)
         stdscr.refresh()
         key = stdscr.getch()
         if key == curses.KEY_UP:
@@ -219,13 +315,21 @@ def view_details(stdscr, item):
     h, w = stdscr.getmaxyx()
     y = 2
     x = 2
-    lines = [
-        f"Title    : {item.get('title', '')}",
-        f"Name     : {item.get('name', '')}",
-        f"Note     : {item.get('note', '')}",
-        f"Username : {item.get('username', '')}",
-        f"Password : {item.get('password', '')}"
-    ]
+    lines = []
+    if item.get("type") == "account":
+        lines.append(f"Type     : Account")
+        lines.append(f"Title    : {item.get('title', '')}")
+        lines.append(f"Name     : {item.get('name', '')}")
+        lines.append(f"Note     : {item.get('note', '')}")
+        lines.append(f"Username : {item.get('username', '')}")
+        lines.append(f"Password : {item.get('password', '')}")
+    else:
+        lines.append(f"Type     : API")
+        lines.append(f"Title    : {item.get('title', '')}")
+        lines.append(f"Category : {item.get('category', '')}")
+        lines.append(f"Name     : {item.get('name', '')}")
+        lines.append(f"Note     : {item.get('note', '')}")
+        lines.append(f"Data API : {item.get('data_api', '')}")
     for line in lines:
         if y >= h - 2:
             break
@@ -254,7 +358,7 @@ def main_menu(stdscr, data, key):
                 stdscr.getch()
                 continue
 
-            headers = ["No", "Title", "Name", "Note", "Username", "Password"]
+            headers = ["No", "Title", "Name", "Note", "Username/Data", "Password"]
             max_cols = len(headers)
             base_width = w - 2
             fixed = 4
@@ -295,14 +399,24 @@ def main_menu(stdscr, data, key):
                 if y >= h - 5:
                     break
                 x = 1
-                row = [
-                    str(idx+1),
-                    item.get("title", "")[:col_widths[1]],
-                    item.get("name", "")[:col_widths[2]],
-                    "***" if item.get("note") else "",
-                    "***" if item.get("username") else "",
-                    "***" if item.get("password") else ""
-                ]
+                if item.get("type") == "account":
+                    row = [
+                        str(idx+1),
+                        item.get("title", "")[:col_widths[1]],
+                        item.get("name", "")[:col_widths[2]],
+                        "***" if item.get("note") else "",
+                        "***" if item.get("username") else "",
+                        "***" if item.get("password") else ""
+                    ]
+                else:
+                    row = [
+                        str(idx+1),
+                        item.get("title", "")[:col_widths[1]],
+                        item.get("name", "")[:col_widths[2]],
+                        "***" if item.get("note") else "",
+                        "***" if item.get("data_api") else "",
+                        ""
+                    ]
                 for i, col in enumerate(row):
                     try:
                         stdscr.addnstr(y, x, col.ljust(col_widths[i])[:col_widths[i]], col_widths[i])
@@ -312,26 +426,32 @@ def main_menu(stdscr, data, key):
                 y += 1
 
             menu_y = h - 3
-            menu_x = 1
+            total_width = sum(col_widths) + (max_cols - 1)
+            if total_width > w - 2:
+                total_width = w - 2
+            menu_x = (w - total_width) // 2
+            if menu_x < 0:
+                menu_x = 1
             try:
-                stdscr.addnstr(menu_y, menu_x, "-" * (sum(col_widths) + (max_cols - 1)), w - 2)
+                stdscr.addnstr(menu_y, menu_x, "-" * total_width, total_width)
             except:
                 pass
             menu_y += 1
-            menu_x = 1
-            spacing = 12
+            menu_items_display = []
             for i, item in enumerate(menu_items):
-                pos_x = menu_x + i * spacing
-                if pos_x + len(item) >= w:
-                    break
                 if i == current_menu:
-                    if curses.has_colors():
-                        stdscr.attron(curses.color_pair(2) | curses.A_BOLD)
-                    stdscr.addnstr(menu_y, pos_x, f" {item} ", spacing)
-                    if curses.has_colors():
-                        stdscr.attroff(curses.color_pair(2) | curses.A_BOLD)
+                    menu_items_display.append(f"[{item}]")
                 else:
-                    stdscr.addnstr(menu_y, pos_x, f" {item} ", spacing)
+                    menu_items_display.append(f" {item} ")
+            sep = "  "
+            menu_str = sep.join(menu_items_display)
+            menu_x = (w - len(menu_str)) // 2
+            if menu_x < 0:
+                menu_x = 1
+            try:
+                stdscr.addstr(menu_y, menu_x, menu_str)
+            except:
+                pass
             stdscr.refresh()
 
             key_input = stdscr.getch()
@@ -346,7 +466,7 @@ def main_menu(stdscr, data, key):
                         data.append(new)
                         save_data(data, key)
                 elif current_menu == 1:
-                    items = [f"{i+1}. {d.get('title','')} - {d.get('name','')}" for i, d in enumerate(data)]
+                    items = [f"{d.get('title','')} - {d.get('name','')}" for d in data]
                     sel = select_item(stdscr, items, "Select account to edit:")
                     if sel is not None:
                         old = data[sel]
@@ -355,7 +475,7 @@ def main_menu(stdscr, data, key):
                             data[sel] = new
                             save_data(data, key)
                 elif current_menu == 2:
-                    items = [f"{i+1}. {d.get('title','')} - {d.get('name','')}" for i, d in enumerate(data)]
+                    items = [f"{d.get('title','')} - {d.get('name','')}" for d in data]
                     sel = select_item(stdscr, items, "Select account to delete:")
                     if sel is not None:
                         try:
@@ -368,7 +488,7 @@ def main_menu(stdscr, data, key):
                         except:
                             pass
                 elif current_menu == 3:
-                    items = [f"{i+1}. {d.get('title','')} - {d.get('name','')}" for i, d in enumerate(data)]
+                    items = [f"{d.get('title','')} - {d.get('name','')}" for d in data]
                     sel = select_item(stdscr, items, "Select account to view:")
                     if sel is not None:
                         view_details(stdscr, data[sel])
