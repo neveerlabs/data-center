@@ -15,6 +15,8 @@ Data Center adalah tool CLI berbasis terminal (curses) untuk menyimpan dan menge
 - Enkripsi AES-256-GCM dengan key derivasi PBKDF2
 - File data sensitif disimpan di `~/.data-center/`
 - Antarmuka terminal sederhana menggunakan curses
+- Sessions setiap 5 menit, dan akan diminta password secara ulang setelah sesi habis
+- Pencarian data dengan `title` / `name` sebagai kata kunci di bagian update, delete dan view
 
 ## Instalasi
 
