@@ -12,7 +12,10 @@ import json
 import hashlib
 import base64
 import curses
-import getpass
+import termios
+import tty
+import time
+import traceback
 
 HOME = os.path.expanduser("~")
 DATA_CENTER_DIR = os.path.join(HOME, ".data-center")
@@ -20,9 +23,40 @@ PASS_FILE = os.path.join(DATA_CENTER_DIR, ".password")
 SALT_FILE = os.path.join(DATA_CENTER_DIR, ".salt")
 DATA_FILE = os.path.join(DATA_CENTER_DIR, ".data.enc")
 
+SESSION_TIMEOUT = 300  # 5 minutes
+last_activity = time.time()
+
 def ensure_dir():
     if not os.path.exists(DATA_CENTER_DIR):
         os.makedirs(DATA_CENTER_DIR)
+
+def get_password(prompt):
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        password = ""
+        while True:
+            ch = sys.stdin.read(1)
+            if ch == '\r' or ch == '\n':
+                sys.stdout.write('\n')
+                break
+            elif ch == '\x7f' or ch == '\x08':
+                if len(password) > 0:
+                    password = password[:-1]
+                    sys.stdout.write('\b \b')
+                    sys.stdout.flush()
+            elif ch == '\x03':
+                raise KeyboardInterrupt
+            else:
+                password += ch
+                sys.stdout.write('*')
+                sys.stdout.flush()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    return password
 
 def get_salt():
     if not os.path.exists(SALT_FILE):
@@ -37,8 +71,8 @@ def get_salt():
 def init_password(salt):
     if not os.path.exists(PASS_FILE):
         print("Create new password:")
-        p1 = getpass.getpass("Password: ")
-        p2 = getpass.getpass("Repeat password: ")
+        p1 = get_password("Password: ")
+        p2 = get_password("Repeat password: ")
         if p1 != p2:
             print("Passwords do not match.")
             sys.exit(1)
@@ -50,7 +84,7 @@ def init_password(salt):
             f.write(h)
         return p1
     else:
-        p = getpass.getpass("Password: ")
+        p = get_password("Password: ")
         with open(PASS_FILE, "r") as f:
             stored = f.read().strip()
         h = hashlib.sha256((p + salt.hex()).encode()).hexdigest()
@@ -92,6 +126,66 @@ def save_data(data, key):
     with open(DATA_FILE, "wb") as f:
         f.write(enc)
 
+def reauthenticate(stdscr):
+    global last_activity
+    stdscr.clear()
+    h, w = stdscr.getmaxyx()
+    msg = "Session expired. Please enter your password: "
+    y = h//2
+    x = (w - len(msg))//2
+    if x < 0:
+        x = 0
+    try:
+        stdscr.addnstr(y, x, msg, w - x - 1)
+    except:
+        pass
+    stdscr.refresh()
+    curses.echo()
+    curses.curs_set(1)
+    p = ""
+    input_x = x + len(msg)
+    stdscr.move(y, input_x)
+    stdscr.clrtoeol()
+    while True:
+        key = stdscr.getch()
+        if key == 10 or key == 13:
+            break
+        elif key == 27:
+            sys.exit(0)
+        elif key == curses.KEY_BACKSPACE or key == 127:
+            if len(p) > 0:
+                p = p[:-1]
+                stdscr.move(y, input_x + len(p))
+                stdscr.delch()
+        else:
+            if 32 <= key <= 126:
+                p += chr(key)
+                stdscr.move(y, input_x + len(p) - 1)
+                stdscr.addch('*')
+    curses.noecho()
+    curses.curs_set(0)
+    salt = get_salt()
+    with open(PASS_FILE, "r") as f:
+        stored = f.read().strip()
+    h = hashlib.sha256((p + salt.hex()).encode()).hexdigest()
+    if h != stored:
+        stdscr.clear()
+        try:
+            stdscr.addnstr(h//2, (w - len("Wrong password."))//2, "Wrong password.", w - 1)
+        except:
+            pass
+        stdscr.refresh()
+        time.sleep(1)
+        sys.exit(1)
+    last_activity = time.time()
+    return True
+
+def getch_with_activity(stdscr):
+    global last_activity
+    key = stdscr.getch()
+    last_activity = time.time()
+    return key
+
 def input_field(stdscr, prompt, y, x, default=""):
     curses.noecho()
     curses.curs_set(1)
@@ -104,7 +198,7 @@ def input_field(stdscr, prompt, y, x, default=""):
     pos = len(val)
     stdscr.move(y, x + len(prompt) + 2 + pos)
     while True:
-        key = stdscr.getch()
+        key = getch_with_activity(stdscr)
         if key == 10 or key == 13:
             break
         elif key == 27:
@@ -161,7 +255,32 @@ def show_message(stdscr, msg, y=None, x=None):
     except:
         pass
     stdscr.refresh()
-    stdscr.getch()
+    getch_with_activity(stdscr)
+
+def confirm_delete(stdscr, title):
+    h, w = stdscr.getmaxyx()
+    max_title_len = 30
+    if len(title) > max_title_len:
+        title = title[:max_title_len] + "..."
+    msg = f"Delete '{title}'? (y/n)"
+    y = h//2
+    x = (w - len(msg))//2
+    if x < 0: x = 0
+    if y < 0: y = 0
+    stdscr.clear()
+    try:
+        stdscr.attron(curses.A_REVERSE)
+        stdscr.addnstr(y, x, msg, w - x - 1)
+        stdscr.attroff(curses.A_REVERSE)
+    except:
+        pass
+    stdscr.refresh()
+    while True:
+        ch = getch_with_activity(stdscr)
+        if ch == ord('y') or ch == ord('Y'):
+            return True
+        elif ch == ord('n') or ch == ord('N') or ch == 27:
+            return False
 
 def select_category(stdscr):
     categories = ["Account", "API"]
@@ -180,7 +299,7 @@ def select_category(stdscr):
             else:
                 stdscr.addstr(y+i, x, f"  {cat}  ")
         stdscr.refresh()
-        key = stdscr.getch()
+        key = getch_with_activity(stdscr)
         if key == curses.KEY_UP:
             current = (current - 1) % len(categories)
         elif key == curses.KEY_DOWN:
@@ -210,7 +329,7 @@ def edit_form_account(stdscr, data=None, is_edit=False):
     return new_data
 
 def edit_form_api(stdscr, data=None, is_edit=False):
-    fields = ["title", "category", "name", "note", "data_api"]
+    fields = ["title", "category", "name", "note", "api_key"]
     if data is None:
         data = {f: "" for f in fields}
     y0 = 4
@@ -237,7 +356,7 @@ def edit_form_api(stdscr, data=None, is_edit=False):
                     else:
                         stdscr.addstr(4, x0 + 10 + i*10, f" {ch} ")
                 stdscr.refresh()
-                key = stdscr.getch()
+                key = getch_with_activity(stdscr)
                 if key == curses.KEY_LEFT:
                     current = (current - 1) % len(choices)
                 elif key == curses.KEY_RIGHT:
@@ -250,11 +369,11 @@ def edit_form_api(stdscr, data=None, is_edit=False):
         new_data["category"] = cat
     else:
         new_data["category"] = data.get("category", "ai")
-    for f in ["title", "name", "note", "data_api"]:
+    for f in ["title", "name", "note", "api_key"]:
         default = data.get(f, "")
         prompt = f.capitalize()
-        if f == "data_api":
-            prompt = "Data API"
+        if f == "api_key":
+            prompt = "API Key"
         val = input_field(stdscr, prompt, y0 + len(new_data), x0, default)
         if val is None:
             return None
@@ -277,7 +396,65 @@ def edit_form(stdscr, data=None, is_edit=False):
         else:
             return edit_form_api(stdscr, data, True)
 
-def select_item(stdscr, items, prompt="Select:"):
+def check_duplicate(data, new_data, exclude_idx=None):
+    fields = ["title", "name", "username", "password", "category", "api_key"]
+    dup_indices = []
+    for i, item in enumerate(data):
+        if i == exclude_idx:
+            continue
+        match = True
+        for f in fields:
+            if f == "category" and new_data.get("type") != "api":
+                continue
+            if f == "api_key" and new_data.get("type") != "api":
+                continue
+            if f == "username" and new_data.get("type") != "account":
+                continue
+            if f == "password" and new_data.get("type") != "account":
+                continue
+            val1 = item.get(f, "")
+            val2 = new_data.get(f, "")
+            if val1 != val2:
+                match = False
+                break
+        if match:
+            dup_indices.append(i)
+    return dup_indices
+
+def confirm_duplicate(stdscr, dup_indices):
+    choices = ["Add anyway", "Overwrite", "Cancel"]
+    current = 0
+    while True:
+        stdscr.clear()
+        h, w = stdscr.getmaxyx()
+        y = h//2 - 2
+        x = w//2 - 20
+        msg = "Duplicate data exists. What do you want to do?"
+        stdscr.addstr(y, x, msg)
+        for i, choice in enumerate(choices):
+            if i == current:
+                stdscr.attron(curses.A_REVERSE)
+                stdscr.addstr(y+2+i, x, f"  {choice}  ")
+                stdscr.attroff(curses.A_REVERSE)
+            else:
+                stdscr.addstr(y+2+i, x, f"  {choice}  ")
+        stdscr.refresh()
+        key = getch_with_activity(stdscr)
+        if key == curses.KEY_UP:
+            current = (current - 1) % len(choices)
+        elif key == curses.KEY_DOWN:
+            current = (current + 1) % len(choices)
+        elif key == 10:
+            if current == 0:
+                return "add"
+            elif current == 1:
+                return "overwrite"
+            else:
+                return "cancel"
+        elif key == 27:
+            return "cancel"
+
+def select_item(stdscr, items, prompt="Select:", enable_filter=True):
     if not items:
         show_message(stdscr, "No data.")
         return None
@@ -285,35 +462,56 @@ def select_item(stdscr, items, prompt="Select:"):
     menu_y = 4
     menu_x = 4
     current = 0
+    filter_text = ""
+    filtered_items = items[:]
     while True:
         stdscr.clear()
         stdscr.addstr(2, menu_x, prompt)
-        for i, item in enumerate(items):
+        if enable_filter:
+            stdscr.addstr(3, menu_x, "Filter: " + filter_text)
+        for i, (display, _) in enumerate(filtered_items):
             y = menu_y + i
             if y >= h - 2:
                 break
-            display = f"{i+1}. {item}"
+            display_str = f"{i+1}. {display}"
             if i == current:
                 stdscr.attron(curses.A_REVERSE)
-                stdscr.addnstr(y, menu_x, display, w - menu_x - 1)
+                stdscr.addnstr(y, menu_x, display_str, w - menu_x - 1)
                 stdscr.attroff(curses.A_REVERSE)
             else:
-                stdscr.addnstr(y, menu_x, display, w - menu_x - 1)
+                stdscr.addnstr(y, menu_x, display_str, w - menu_x - 1)
         stdscr.refresh()
-        key = stdscr.getch()
+        key = getch_with_activity(stdscr)
         if key == curses.KEY_UP:
-            current = (current - 1) % len(items)
+            if current > 0:
+                current -= 1
         elif key == curses.KEY_DOWN:
-            current = (current + 1) % len(items)
+            if current < len(filtered_items) - 1:
+                current += 1
         elif key == 10:
-            return current
+            if filtered_items:
+                return filtered_items[current][1]
+            else:
+                continue
         elif key == 27:
             return None
+        elif enable_filter and (32 <= key <= 126):
+            filter_text += chr(key)
+            filtered_items = [item for item in items if filter_text.lower() in item[0].lower()]
+            current = 0
+            if not filtered_items:
+                current = 0
+        elif enable_filter and (key == curses.KEY_BACKSPACE or key == 127):
+            if filter_text:
+                filter_text = filter_text[:-1]
+                filtered_items = [item for item in items if filter_text.lower() in item[0].lower()]
+                current = 0
+                if not filtered_items:
+                    current = 0
 
 def view_details(stdscr, item):
-    stdscr.clear()
+    global last_activity
     h, w = stdscr.getmaxyx()
-    y = 2
     x = 2
     lines = []
     if item.get("type") == "account":
@@ -329,17 +527,37 @@ def view_details(stdscr, item):
         lines.append(f"Category : {item.get('category', '')}")
         lines.append(f"Name     : {item.get('name', '')}")
         lines.append(f"Note     : {item.get('note', '')}")
-        lines.append(f"Data API : {item.get('data_api', '')}")
-    for line in lines:
-        if y >= h - 2:
+        lines.append(f"API Key  : {item.get('api_key', '')}")
+    msg = "Press any key to continue..."
+
+    def draw():
+        stdscr.clear()
+        yy = 2
+        for line in lines:
+            if yy >= h - 2:
+                break
+            stdscr.addnstr(yy, x, line, w - x - 1)
+            yy += 1
+        try:
+            stdscr.addnstr(yy, x, msg, w - x - 1)
+        except:
+            pass
+        stdscr.refresh()
+
+    draw()
+    curses.flushinp()
+    while True:
+        key = stdscr.getch()
+        if key != -1:
+            last_activity = time.time()
             break
-        stdscr.addnstr(y, x, line, w - x - 1)
-        y += 1
-    stdscr.addstr(y, x, "Press any key to continue...")
-    stdscr.refresh()
-    stdscr.getch()
+        if time.time() - last_activity > SESSION_TIMEOUT:
+            reauthenticate(stdscr)
+            draw()
+            curses.flushinp()
 
 def main_menu(stdscr, data, key):
+    global last_activity
     stdscr.keypad(True)
     curses.curs_set(0)
     if curses.has_colors():
@@ -348,14 +566,19 @@ def main_menu(stdscr, data, key):
         curses.init_pair(2, curses.COLOR_WHITE, curses.COLOR_BLUE)
     menu_items = ["Add", "Edit", "Delete", "View", "Exit"]
     current_menu = 0
+    stdscr.timeout(1000)
     while True:
+        if time.time() - last_activity > SESSION_TIMEOUT:
+            reauthenticate(stdscr)
         try:
             stdscr.clear()
             h, w = stdscr.getmaxyx()
             if h < 10 or w < 30:
                 stdscr.addstr(0, 0, "Screen too small. Minimum 30x10.")
                 stdscr.refresh()
-                stdscr.getch()
+                key_input = stdscr.getch()
+                if key_input != -1:
+                    last_activity = time.time()
                 continue
 
             headers = ["No", "Title", "Name", "Note", "Username/Data", "Password"]
@@ -414,7 +637,7 @@ def main_menu(stdscr, data, key):
                         item.get("title", "")[:col_widths[1]],
                         item.get("name", "")[:col_widths[2]],
                         "***" if item.get("note") else "",
-                        "***" if item.get("data_api") else "",
+                        "***" if item.get("api_key") else "",
                         ""
                     ]
                 for i, col in enumerate(row):
@@ -455,43 +678,71 @@ def main_menu(stdscr, data, key):
             stdscr.refresh()
 
             key_input = stdscr.getch()
+            if key_input == -1:
+                continue
+            last_activity = time.time()
+
             if key_input == curses.KEY_LEFT:
                 current_menu = (current_menu - 1) % len(menu_items)
             elif key_input == curses.KEY_RIGHT:
                 current_menu = (current_menu + 1) % len(menu_items)
             elif key_input == 10:
                 if current_menu == 0:
-                    new = edit_form(stdscr)
-                    if new is not None:
-                        data.append(new)
-                        save_data(data, key)
-                elif current_menu == 1:
-                    items = [f"{d.get('title','')} - {d.get('name','')}" for d in data]
-                    sel = select_item(stdscr, items, "Select account to edit:")
-                    if sel is not None:
-                        old = data[sel]
-                        new = edit_form(stdscr, old, is_edit=True)
+                    try:
+                        new = edit_form(stdscr)
                         if new is not None:
-                            data[sel] = new
+                            dup = check_duplicate(data, new)
+                            if dup:
+                                action = confirm_duplicate(stdscr, dup)
+                                if action == "cancel":
+                                    continue
+                                elif action == "overwrite":
+                                    for idx in sorted(dup, reverse=True):
+                                        del data[idx]
+                            data.append(new)
                             save_data(data, key)
+                    except Exception as e:
+                        show_message(stdscr, f"Add error: {str(e)}")
+                elif current_menu == 1:
+                    try:
+                        items = [(f"{d.get('title','')} - {d.get('name','')}", i) for i, d in enumerate(data)]
+                        sel = select_item(stdscr, items, "Select account to edit:", enable_filter=True)
+                        if sel is not None:
+                            old = data[sel]
+                            new = edit_form(stdscr, old, is_edit=True)
+                            if new is not None:
+                                dup = check_duplicate(data, new, exclude_idx=sel)
+                                if dup:
+                                    action = confirm_duplicate(stdscr, dup)
+                                    if action == "cancel":
+                                        continue
+                                    elif action == "overwrite":
+                                        for idx in sorted(dup, reverse=True):
+                                            del data[idx]
+                                        if sel > len(data):
+                                            sel = len(data) - 1
+                                data[sel] = new
+                                save_data(data, key)
+                    except Exception as e:
+                        show_message(stdscr, f"Edit error: {str(e)}")
                 elif current_menu == 2:
-                    items = [f"{d.get('title','')} - {d.get('name','')}" for d in data]
-                    sel = select_item(stdscr, items, "Select account to delete:")
-                    if sel is not None:
-                        try:
-                            stdscr.addstr(menu_y+2, 1, f"Delete '{data[sel].get('title','')}'? (y/n)")
-                            stdscr.refresh()
-                            ch = stdscr.getch()
-                            if ch == ord('y') or ch == ord('Y'):
+                    try:
+                        items = [(f"{d.get('title','')} - {d.get('name','')}", i) for i, d in enumerate(data)]
+                        sel = select_item(stdscr, items, "Select account to delete:", enable_filter=True)
+                        if sel is not None:
+                            if confirm_delete(stdscr, data[sel].get('title', '')):
                                 del data[sel]
                                 save_data(data, key)
-                        except:
-                            pass
+                    except Exception as e:
+                        show_message(stdscr, f"Delete error: {str(e)}")
                 elif current_menu == 3:
-                    items = [f"{d.get('title','')} - {d.get('name','')}" for d in data]
-                    sel = select_item(stdscr, items, "Select account to view:")
-                    if sel is not None:
-                        view_details(stdscr, data[sel])
+                    try:
+                        items = [(f"{d.get('title','')} - {d.get('name','')}", i) for i, d in enumerate(data)]
+                        sel = select_item(stdscr, items, "Select account to view:", enable_filter=True)
+                        if sel is not None:
+                            view_details(stdscr, data[sel])
+                    except Exception as e:
+                        show_message(stdscr, f"View error: {str(e)}")
                 elif current_menu == 4:
                     save_data(data, key)
                     break
@@ -503,6 +754,7 @@ def main_menu(stdscr, data, key):
         except KeyboardInterrupt:
             save_data(data, key)
             break
+    stdscr.timeout(-1)
 
 def main():
     ensure_dir()
@@ -518,6 +770,7 @@ def main():
     except Exception as e:
         save_data(data, key)
         print(f"Unexpected error: {e}")
+        traceback.print_exc()
         sys.exit(1)
 
 if __name__ == "__main__":
