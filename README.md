@@ -1,4 +1,4 @@
-![Screenshot](https://raw.githubusercontent.com/neveerlabs/data-center/main/screenshot.jpg)
+![Screenshot](https://raw.githubusercontent.com/neveerlabs/data-center/main/screenshot.png)
 
 # Data Center
 
